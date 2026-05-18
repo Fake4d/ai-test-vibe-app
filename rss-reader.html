@@ -464,7 +464,10 @@
 </div>
 
 <script>
-  const PROXY = 'https://api.allorigins.win/get?url=';
+  const PROXIES = [
+    url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  ];
   const DEFAULT_FEED = 'https://www.tagesschau.de/xml/rss2/';
 
   const urlInput  = document.getElementById('url-input');
@@ -502,27 +505,66 @@
     return node ? (node.getAttribute(attr) || '').trim() : '';
   }
 
+  // Returns first element matching any of the tag names (with namespace prefix)
+  function byTagName(el, ...tags) {
+    for (const tag of tags) {
+      const found = el.getElementsByTagName(tag);
+      if (found.length) return found[0];
+    }
+    return null;
+  }
+
   // Extract image from various RSS image fields
   function extractImage(item) {
-    // media:content
-    const media = item.querySelector('*|content[url]') || item.querySelector('[url]');
-    if (media) {
-      const u = media.getAttribute('url');
-      if (u && /\.(jpe?g|png|webp|gif)/i.test(u)) return u;
+    // 1. media:content (most common – Tagesschau, ARD, ZDF …)
+    const mc = byTagName(item, 'media:content');
+    if (mc) {
+      const u = mc.getAttribute('url');
+      if (u) return u;
     }
-    // media:thumbnail
-    const thumb = item.querySelector('*|thumbnail') || item.querySelector('thumbnail');
-    if (thumb) {
-      const u = thumb.getAttribute('url') || thumb.textContent;
-      if (u) return u.trim();
+
+    // 2. media:group > media:content
+    const mg = byTagName(item, 'media:group');
+    if (mg) {
+      const inner = mg.getElementsByTagName('media:content')[0];
+      if (inner) {
+        const u = inner.getAttribute('url');
+        if (u) return u;
+      }
     }
-    // enclosure
-    const enc = item.querySelector('enclosure[type^="image"]');
-    if (enc) return enc.getAttribute('url') || '';
-    // img in description
-    const desc = getText(item, 'description') || getText(item, 'content\\:encoded') || '';
-    const m = desc.match(/<img[^>]+src=["']([^"']+)["']/i);
-    if (m) return m[1];
+
+    // 3. media:thumbnail
+    const mt = byTagName(item, 'media:thumbnail');
+    if (mt) {
+      const u = mt.getAttribute('url') || mt.textContent.trim();
+      if (u) return u;
+    }
+
+    // 4. enclosure
+    const enc = item.querySelector('enclosure');
+    if (enc) {
+      const type = enc.getAttribute('type') || '';
+      if (!type || type.startsWith('image')) {
+        const u = enc.getAttribute('url');
+        if (u) return u;
+      }
+    }
+
+    // 5. <img> inside description CDATA
+    const descNode = item.getElementsByTagName('description')[0];
+    if (descNode) {
+      const html = descNode.textContent || '';
+      const m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+      if (m) return m[1];
+    }
+
+    // 6. XMLSerializer fallback – catches any remaining url= attribute
+    try {
+      const raw = new XMLSerializer().serializeToString(item);
+      const m = raw.match(/url=["'](https?:\/\/[^"']+)["']/i);
+      if (m) return m[1];
+    } catch {}
+
     return '';
   }
 
@@ -545,6 +587,13 @@
     const d = document.createElement('div');
     d.innerHTML = html;
     return d.textContent || '';
+  }
+
+  function imgFallback(el) {
+    const ph = document.createElement('div');
+    ph.className = 'card-thumb-placeholder';
+    ph.textContent = '📄';
+    el.parentNode.replaceChild(ph, el);
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -589,10 +638,9 @@
 
       card.innerHTML = `
         ${imgUrl
-          ? `<img class="card-thumb" src="${imgUrl}" alt="" loading="lazy" onerror="this.parentElement.querySelector('.card-thumb-placeholder') && (this.style.display='none'); this.nextElementSibling && (this.nextElementSibling.style.display='flex')">`
+          ? `<img class="card-thumb" src="${imgUrl}" alt="" loading="lazy" onerror="imgFallback(this)">`
           : `<div class="card-thumb-placeholder">📄</div>`
         }
-        ${imgUrl ? `<div class="card-thumb-placeholder" style="display:none">📄</div>` : ''}
         <div class="card-body">
           ${cat ? `<div class="card-category">${cat}</div>` : ''}
           <div class="card-title">${title}</div>
@@ -651,16 +699,29 @@
 
   // ── Load feed ─────────────────────────────────────────────────────────────
 
+  async function fetchWithFallback(feedUrl) {
+    for (const makeUrl of PROXIES) {
+      try {
+        const res = await fetch(makeUrl(feedUrl), { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) continue;
+        const data = await res.json();
+        // allorigins returns { contents }, corsproxy returns raw text
+        const xml = data.contents ?? (typeof data === 'string' ? data : null);
+        if (xml) return xml;
+      } catch {}
+    }
+    // Last resort: raw fetch (works if feed allows CORS)
+    const res = await fetch(feedUrl, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  }
+
   async function loadFeed(feedUrl) {
     showLoading();
 
     let xml;
     try {
-      const res = await fetch(PROXY + encodeURIComponent(feedUrl));
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (!data.contents) throw new Error('Leere Antwort vom Proxy');
-      xml = data.contents;
+      xml = await fetchWithFallback(feedUrl);
     } catch (err) {
       showError(`Feed konnte nicht geladen werden.<br><small>${err.message}</small>`);
       return;
