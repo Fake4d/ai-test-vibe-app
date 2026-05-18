@@ -442,7 +442,7 @@
     <input
       type="url"
       id="url-input"
-      placeholder="https://www.tagesschau.de/xml/rss2/ (Standard)"
+      placeholder="RSS- oder Atom-Feed URL (Standard: Tagesschau)"
       autocomplete="off"
       spellcheck="false"
     />
@@ -464,11 +464,7 @@
 </div>
 
 <script>
-  const PROXIES = [
-    url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-    url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  ];
-  const DEFAULT_FEED = 'https://www.tagesschau.de/xml/rss2/';
+  const DEFAULT_FEED = 'https://www.tagesschau.de/infoservices/alle-meldungen-100~rss2.xml';
 
   const urlInput  = document.getElementById('url-input');
   const loadBtn   = document.getElementById('load-btn');
@@ -514,9 +510,16 @@
     return null;
   }
 
-  // Extract image from various RSS image fields
+  // Find first <img src=""> in any HTML/CDATA text
+  function findImgInHtml(html) {
+    if (!html) return '';
+    const m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+    return m ? m[1] : '';
+  }
+
+  // Extract image from various RSS/Atom image fields
   function extractImage(item) {
-    // 1. media:content (most common – Tagesschau, ARD, ZDF …)
+    // 1. media:content (RSS 2.0 with Media RSS – Tagesschau, ARD, ZDF …)
     const mc = byTagName(item, 'media:content');
     if (mc) {
       const u = mc.getAttribute('url');
@@ -540,7 +543,7 @@
       if (u) return u;
     }
 
-    // 4. enclosure
+    // 4. enclosure (RSS 2.0)
     const enc = item.querySelector('enclosure');
     if (enc) {
       const type = enc.getAttribute('type') || '';
@@ -550,18 +553,29 @@
       }
     }
 
-    // 5. <img> inside description CDATA
-    const descNode = item.getElementsByTagName('description')[0];
-    if (descNode) {
-      const html = descNode.textContent || '';
-      const m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
-      if (m) return m[1];
+    // 5. <img> in CDATA – check Atom <content>, then <summary>,
+    //    then RSS <description> / <content:encoded>
+    for (const tag of ['content', 'summary', 'description', 'content:encoded']) {
+      const node = item.getElementsByTagName(tag)[0];
+      if (node) {
+        const img = findImgInHtml(node.textContent || '');
+        if (img) return img;
+      }
     }
 
-    // 6. XMLSerializer fallback – catches any remaining url= attribute
+    // 6. itunes:image
+    const itunes = byTagName(item, 'itunes:image');
+    if (itunes) {
+      const u = itunes.getAttribute('href') || itunes.getAttribute('url');
+      if (u) return u;
+    }
+
+    // 7. XMLSerializer fallback – catches anything else
     try {
       const raw = new XMLSerializer().serializeToString(item);
-      const m = raw.match(/url=["'](https?:\/\/[^"']+)["']/i);
+      const m = raw.match(/(?:url|href|src)=["'](https?:\/\/[^"']+\.(?:jpe?g|png|webp|gif|avif)[^"']*)["']/i)
+            || raw.match(/<img[^>]+src=["']([^"']+)["']/i)
+            || raw.match(/(?:url|href)=["'](https?:\/\/[^"']*?images?[^"']*)["']/i);
       if (m) return m[1];
     } catch {}
 
@@ -699,19 +713,43 @@
 
   // ── Load feed ─────────────────────────────────────────────────────────────
 
-  async function fetchWithFallback(feedUrl) {
-    for (const makeUrl of PROXIES) {
-      try {
-        const res = await fetch(makeUrl(feedUrl), { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) continue;
-        const data = await res.json();
-        // allorigins returns { contents }, corsproxy returns raw text
-        const xml = data.contents ?? (typeof data === 'string' ? data : null);
-        if (xml) return xml;
-      } catch {}
+  // Decode allorigins base64 data URI: "data:...;base64,XXXX"
+  function decodeDataUri(s) {
+    const m = /^data:[^,]*?;base64,(.*)$/s.exec(s);
+    if (!m) return s;
+    try {
+      // atob -> binary string -> UTF-8 string
+      const bin = atob(m[1]);
+      const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+      return new TextDecoder('utf-8').decode(bytes);
+    } catch {
+      return s;
     }
-    // Last resort: raw fetch (works if feed allows CORS)
-    const res = await fetch(feedUrl, { signal: AbortSignal.timeout(8000) });
+  }
+
+  async function fetchWithFallback(feedUrl) {
+    // 1. allorigins (returns JSON with base64 data URI in `contents`)
+    try {
+      const url = `https://api.allorigins.win/get?url=${encodeURIComponent(feedUrl)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.contents) return decodeDataUri(data.contents);
+      }
+    } catch {}
+
+    // 2. allorigins /raw – returns raw text directly
+    try {
+      const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (res.ok) {
+        const txt = await res.text();
+        if (txt && txt.trim().startsWith('<')) return txt;
+      }
+    } catch {}
+
+    // 3. Direct fetch (works if feed allows CORS)
+    const res = await fetch(feedUrl, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.text();
   }
