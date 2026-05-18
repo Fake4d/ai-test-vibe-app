@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RSS Reader</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3347;
+      --accent: #5b8dee;
+      --accent-hover: #7aa4f5;
+      --text: #e8eaf0;
+      --text-muted: #8891aa;
+      --text-dim: #5a6280;
+      --radius: 14px;
+      --shadow: 0 4px 24px rgba(0,0,0,.4);
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 0 0 80px;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, #1a1d27 0%, #12151f 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 32px 24px 28px;
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: clamp(1.6rem, 4vw, 2.4rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #e8eaf0 0%, #5b8dee 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 6px;
+    }
+
+    header p {
+      color: var(--text-muted);
+      font-size: .95rem;
+    }
+
+    /* ── Search bar ── */
+    .search-bar {
+      max-width: 760px;
+      margin: 32px auto 0;
+      display: flex;
+      gap: 10px;
+      padding: 0 16px;
+    }
+
+    .search-bar input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      padding: 13px 16px;
+      font-size: 1rem;
+      color: var(--text);
+      outline: none;
+      transition: border-color .2s;
+    }
+
+    .search-bar input::placeholder { color: var(--text-dim); }
+
+    .search-bar input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(91,141,238,.15);
+    }
+
+    .search-bar button {
+      background: var(--accent);
+      border: none;
+      border-radius: 10px;
+      padding: 13px 24px;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #fff;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .2s, transform .1s;
+    }
+
+    .search-bar button:hover { background: var(--accent-hover); }
+    .search-bar button:active { transform: scale(.97); }
+
+    /* ── Feed meta ── */
+    #feed-meta {
+      max-width: 960px;
+      margin: 28px auto 0;
+      padding: 0 16px;
+      display: none;
+    }
+
+    .feed-header {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .feed-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      object-fit: contain;
+      background: var(--surface2);
+      flex-shrink: 0;
+    }
+
+    .feed-icon-placeholder {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      background: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      flex-shrink: 0;
+    }
+
+    .feed-info h2 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .feed-info p {
+      color: var(--text-muted);
+      font-size: .88rem;
+      line-height: 1.5;
+    }
+
+    .feed-badge {
+      margin-left: auto;
+      background: rgba(91,141,238,.15);
+      color: var(--accent);
+      border: 1px solid rgba(91,141,238,.3);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: .78rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    /* ── Article grid ── */
+    #articles {
+      max-width: 960px;
+      margin: 24px auto 0;
+      padding: 0 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    /* ── Article card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform .2s, box-shadow .2s, border-color .2s;
+      cursor: pointer;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .card:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow);
+      border-color: #3e4460;
+    }
+
+    .card-thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      background: var(--surface2);
+      display: block;
+    }
+
+    .card-thumb-placeholder {
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: linear-gradient(135deg, var(--surface2) 0%, #2a2f45 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5rem;
+      opacity: .4;
+    }
+
+    .card-body {
+      padding: 18px 20px 20px;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+
+    .card-category {
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+
+    .card-title {
+      font-size: 1.03rem;
+      font-weight: 600;
+      line-height: 1.45;
+      margin-bottom: 10px;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .card-desc {
+      font-size: .88rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      flex: 1;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .card-date {
+      font-size: .8rem;
+      color: var(--text-dim);
+    }
+
+    .card-link-icon {
+      color: var(--accent);
+      font-size: .85rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0;
+      transition: opacity .2s;
+    }
+
+    .card:hover .card-link-icon { opacity: 1; }
+
+    /* ── States ── */
+    #state {
+      max-width: 760px;
+      margin: 60px auto 0;
+      padding: 0 16px;
+      text-align: center;
+    }
+
+    .state-icon { font-size: 3.5rem; margin-bottom: 16px; }
+
+    .state-title {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .state-sub {
+      color: var(--text-muted);
+      font-size: .95rem;
+      line-height: 1.6;
+    }
+
+    /* Spinner */
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 4px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+      margin: 0 auto 20px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Article modal / overlay ── */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.7);
+      backdrop-filter: blur(6px);
+      z-index: 100;
+      overflow-y: auto;
+      padding: 32px 16px 60px;
+    }
+
+    #overlay.open { display: block; }
+
+    .modal {
+      max-width: 720px;
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    }
+
+    .modal-hero {
+      width: 100%;
+      max-height: 380px;
+      object-fit: cover;
+      display: block;
+    }
+
+    .modal-body {
+      padding: 32px 36px 36px;
+    }
+
+    .modal-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .modal-category {
+      font-size: .75rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: rgba(91,141,238,.1);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    .modal-date {
+      font-size: .83rem;
+      color: var(--text-dim);
+    }
+
+    .modal-title {
+      font-size: clamp(1.3rem, 3vw, 1.8rem);
+      font-weight: 700;
+      line-height: 1.35;
+      letter-spacing: -.01em;
+      margin-bottom: 20px;
+    }
+
+    .modal-desc {
+      font-size: 1.05rem;
+      line-height: 1.75;
+      color: #c5c9d6;
+      margin-bottom: 28px;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 9px;
+      padding: 12px 22px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background .2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1.5px solid var(--border);
+      border-radius: 9px;
+      padding: 11px 22px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color .2s, color .2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-ghost:hover { border-color: var(--text-muted); color: var(--text); }
+
+    /* ── Responsive ── */
+    @media (max-width: 600px) {
+      .modal-body { padding: 24px 20px 28px; }
+      #articles { grid-template-columns: 1fr; }
+      .feed-badge { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>📰 RSS Reader</h1>
+  <p>Gib einen RSS-Feed ein und lies die Artikel in einer schönen Ansicht</p>
+
+  <div class="search-bar">
+    <input
+      type="url"
+      id="url-input"
+      placeholder="https://www.tagesschau.de/xml/rss2/ (Standard)"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button id="load-btn">Laden</button>
+  </div>
+</header>
+
+<div id="feed-meta"></div>
+<div id="articles"></div>
+<div id="state">
+  <div class="state-icon">📡</div>
+  <div class="state-title">RSS-Feed eingeben</div>
+  <div class="state-sub">Gib eine Feed-URL ein oder klicke auf „Laden"<br>um den Tagesschau-Feed zu starten.</div>
+</div>
+
+<!-- Article overlay -->
+<div id="overlay">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+  const PROXY = 'https://api.allorigins.win/get?url=';
+  const DEFAULT_FEED = 'https://www.tagesschau.de/xml/rss2/';
+
+  const urlInput  = document.getElementById('url-input');
+  const loadBtn   = document.getElementById('load-btn');
+  const feedMeta  = document.getElementById('feed-meta');
+  const articles  = document.getElementById('articles');
+  const state     = document.getElementById('state');
+  const overlay   = document.getElementById('overlay');
+  const modal     = document.getElementById('modal');
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+
+  function setState(html) {
+    state.innerHTML = html;
+    state.style.display = '';
+    feedMeta.style.display = 'none';
+    articles.innerHTML = '';
+  }
+
+  function showLoading() {
+    setState('<div class="spinner"></div><div class="state-title">Feed wird geladen…</div><div class="state-sub">Einen Moment bitte.</div>');
+  }
+
+  function showError(msg) {
+    setState(`<div class="state-icon">⚠️</div><div class="state-title">Fehler beim Laden</div><div class="state-sub">${msg}</div>`);
+  }
+
+  function getText(el, tag) {
+    const node = el.querySelector(tag);
+    return node ? (node.textContent || '').trim() : '';
+  }
+
+  function getAttr(el, tag, attr) {
+    const node = el.querySelector(tag);
+    return node ? (node.getAttribute(attr) || '').trim() : '';
+  }
+
+  // Extract image from various RSS image fields
+  function extractImage(item) {
+    // media:content
+    const media = item.querySelector('*|content[url]') || item.querySelector('[url]');
+    if (media) {
+      const u = media.getAttribute('url');
+      if (u && /\.(jpe?g|png|webp|gif)/i.test(u)) return u;
+    }
+    // media:thumbnail
+    const thumb = item.querySelector('*|thumbnail') || item.querySelector('thumbnail');
+    if (thumb) {
+      const u = thumb.getAttribute('url') || thumb.textContent;
+      if (u) return u.trim();
+    }
+    // enclosure
+    const enc = item.querySelector('enclosure[type^="image"]');
+    if (enc) return enc.getAttribute('url') || '';
+    // img in description
+    const desc = getText(item, 'description') || getText(item, 'content\\:encoded') || '';
+    const m = desc.match(/<img[^>]+src=["']([^"']+)["']/i);
+    if (m) return m[1];
+    return '';
+  }
+
+  function extractCategory(item) {
+    const cat = item.querySelector('category');
+    return cat ? cat.textContent.trim() : '';
+  }
+
+  function formatDate(str) {
+    if (!str) return '';
+    try {
+      return new Date(str).toLocaleDateString('de-DE', {
+        day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    } catch { return str; }
+  }
+
+  function stripHtml(html) {
+    const d = document.createElement('div');
+    d.innerHTML = html;
+    return d.textContent || '';
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────
+
+  function renderFeedMeta(channel, count) {
+    const title = getText(channel, 'title');
+    const desc  = getText(channel, 'description');
+    const link  = getText(channel, 'link');
+    const img   = getAttr(channel, 'image url', 'src') || getText(channel, 'image url') || '';
+
+    const iconHtml = img
+      ? `<img class="feed-icon" src="${img}" alt="" onerror="this.style.display='none'">`
+      : `<div class="feed-icon-placeholder">📰</div>`;
+
+    feedMeta.innerHTML = `
+      <div class="feed-header">
+        ${iconHtml}
+        <div class="feed-info">
+          <h2>${title || 'RSS Feed'}</h2>
+          <p>${desc || link || ''}</p>
+        </div>
+        <span class="feed-badge">${count} Artikel</span>
+      </div>`;
+    feedMeta.style.display = 'block';
+    state.style.display = 'none';
+  }
+
+  function renderCards(items) {
+    articles.innerHTML = '';
+    items.forEach((item, i) => {
+      const title   = getText(item, 'title');
+      const link    = getText(item, 'link') || getAttr(item, 'link', 'href');
+      const desc    = stripHtml(getText(item, 'description') || getText(item, 'summary') || '');
+      const date    = getText(item, 'pubDate') || getText(item, 'published') || getText(item, 'dc\\:date') || '';
+      const cat     = extractCategory(item);
+      const imgUrl  = extractImage(item);
+
+      const card = document.createElement('a');
+      card.className = 'card';
+      card.href = '#';
+      card.setAttribute('aria-label', title);
+
+      card.innerHTML = `
+        ${imgUrl
+          ? `<img class="card-thumb" src="${imgUrl}" alt="" loading="lazy" onerror="this.parentElement.querySelector('.card-thumb-placeholder') && (this.style.display='none'); this.nextElementSibling && (this.nextElementSibling.style.display='flex')">`
+          : `<div class="card-thumb-placeholder">📄</div>`
+        }
+        ${imgUrl ? `<div class="card-thumb-placeholder" style="display:none">📄</div>` : ''}
+        <div class="card-body">
+          ${cat ? `<div class="card-category">${cat}</div>` : ''}
+          <div class="card-title">${title}</div>
+          ${desc ? `<div class="card-desc">${desc}</div>` : ''}
+          <div class="card-footer">
+            <span class="card-date">${formatDate(date)}</span>
+            <span class="card-link-icon">Lesen →</span>
+          </div>
+        </div>`;
+
+      card.addEventListener('click', (e) => {
+        e.preventDefault();
+        openModal({ title, link, desc, date, cat, imgUrl });
+      });
+
+      articles.appendChild(card);
+    });
+  }
+
+  // ── Modal ─────────────────────────────────────────────────────────────────
+
+  function openModal({ title, link, desc, date, cat, imgUrl }) {
+    modal.innerHTML = `
+      ${imgUrl ? `<img class="modal-hero" src="${imgUrl}" alt="${title}" onerror="this.style.display='none'">` : ''}
+      <div class="modal-body">
+        <div class="modal-meta">
+          ${cat ? `<span class="modal-category">${cat}</span>` : ''}
+          ${date ? `<span class="modal-date">${formatDate(date)}</span>` : ''}
+        </div>
+        <h2 class="modal-title">${title}</h2>
+        ${desc ? `<p class="modal-desc">${desc}</p>` : ''}
+        <div class="modal-actions">
+          ${link ? `<a class="btn-primary" href="${link}" target="_blank" rel="noopener">Artikel öffnen ↗</a>` : ''}
+          <button class="btn-ghost" id="close-btn">✕ Schließen</button>
+        </div>
+      </div>`;
+
+    overlay.classList.add('open');
+    document.body.style.overflow = 'hidden';
+
+    document.getElementById('close-btn').addEventListener('click', closeModal);
+  }
+
+  function closeModal() {
+    overlay.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  // ── Load feed ─────────────────────────────────────────────────────────────
+
+  async function loadFeed(feedUrl) {
+    showLoading();
+
+    let xml;
+    try {
+      const res = await fetch(PROXY + encodeURIComponent(feedUrl));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.contents) throw new Error('Leere Antwort vom Proxy');
+      xml = data.contents;
+    } catch (err) {
+      showError(`Feed konnte nicht geladen werden.<br><small>${err.message}</small>`);
+      return;
+    }
+
+    let doc;
+    try {
+      doc = new DOMParser().parseFromString(xml, 'text/xml');
+    } catch {
+      showError('Ungültiges XML im Feed.');
+      return;
+    }
+
+    const parseErr = doc.querySelector('parsererror');
+    if (parseErr) {
+      showError('Feed konnte nicht geparst werden – ist die URL ein gültiger RSS/Atom-Feed?');
+      return;
+    }
+
+    // Support RSS 2.0 + Atom
+    let items = [...doc.querySelectorAll('channel > item')];
+    if (!items.length) items = [...doc.querySelectorAll('entry')]; // Atom
+
+    if (!items.length) {
+      showError('Im Feed wurden keine Artikel gefunden.');
+      return;
+    }
+
+    const channel = doc.querySelector('channel') || doc.querySelector('feed');
+    renderFeedMeta(channel, items.length);
+    renderCards(items);
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+
+  loadBtn.addEventListener('click', () => {
+    const url = urlInput.value.trim() || DEFAULT_FEED;
+    loadFeed(url);
+  });
+
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadBtn.click();
+  });
+
+  // Auto-load default feed on startup
+  loadFeed(DEFAULT_FEED);
+</script>
+</body>
+</html>
