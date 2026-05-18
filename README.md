@@ -1,2 +1,2 @@
 # ai-test-vibe-app
-Repository to Test Vibe coding 
+Repository to test vibe coding 
