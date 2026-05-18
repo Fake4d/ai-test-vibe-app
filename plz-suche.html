@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deutsche Postleitzahl-Suche</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 440px;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      color: #1a1a2e;
+      margin-bottom: 0.25rem;
+    }
+
+    .subtitle {
+      font-size: 0.875rem;
+      color: #6b7280;
+      margin-bottom: 2rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 0.5rem;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 0.625rem 0.875rem;
+      border: 1.5px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 1rem;
+      color: #111827;
+      transition: border-color 0.2s;
+      outline: none;
+    }
+
+    input[type="text"]:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+    }
+
+    input[type="text"]::placeholder {
+      color: #9ca3af;
+    }
+
+    button {
+      padding: 0.625rem 1.25rem;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    button:active {
+      background: #1e40af;
+    }
+
+    button:disabled {
+      background: #93c5fd;
+      cursor: not-allowed;
+    }
+
+    .result {
+      margin-top: 1.5rem;
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.9375rem;
+      display: none;
+    }
+
+    .result.success {
+      background: #eff6ff;
+      border: 1.5px solid #bfdbfe;
+      display: block;
+    }
+
+    .result.error {
+      background: #fef2f2;
+      border: 1.5px solid #fecaca;
+      color: #b91c1c;
+      display: block;
+    }
+
+    .result-plz {
+      font-size: 0.8125rem;
+      color: #6b7280;
+      margin-bottom: 0.25rem;
+    }
+
+    .result-city {
+      font-size: 1.375rem;
+      font-weight: 700;
+      color: #1d4ed8;
+    }
+
+    .result-state {
+      font-size: 0.875rem;
+      color: #374151;
+      margin-top: 0.25rem;
+    }
+
+    .spinner {
+      display: none;
+      margin-top: 1.5rem;
+      text-align: center;
+      color: #6b7280;
+      font-size: 0.875rem;
+    }
+
+    .spinner.visible {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Postleitzahl-Suche</h1>
+    <p class="subtitle">Ort in Deutschland anhand der PLZ ermitteln</p>
+
+    <label for="plz-input">Postleitzahl</label>
+    <div class="input-row">
+      <input
+        type="text"
+        id="plz-input"
+        placeholder="z.B. 10115"
+        maxlength="5"
+        pattern="\d{5}"
+        inputmode="numeric"
+        autocomplete="postal-code"
+        aria-label="Postleitzahl eingeben"
+      >
+      <button id="search-btn" type="button" aria-label="Suchen">Suchen</button>
+    </div>
+
+    <div class="spinner" id="spinner" aria-live="polite">Wird geladen&hellip;</div>
+    <div class="result" id="result" role="status" aria-live="polite"></div>
+  </div>
+
+  <script>
+    const input  = document.getElementById('plz-input');
+    const button = document.getElementById('search-btn');
+    const result = document.getElementById('result');
+    const spinner = document.getElementById('spinner');
+
+    async function lookup() {
+      const plz = input.value.trim();
+
+      if (!/^\d{5}$/.test(plz)) {
+        showError('Bitte eine gültige 5-stellige Postleitzahl eingeben.');
+        return;
+      }
+
+      result.className = 'result';
+      result.innerHTML = '';
+      spinner.classList.add('visible');
+      button.disabled = true;
+
+      try {
+        const res = await fetch(`https://api.zippopotam.us/de/${plz}`);
+
+        if (!res.ok) {
+          throw new Error('not_found');
+        }
+
+        const data = await res.json();
+        const places = data.places;
+
+        if (!places || places.length === 0) {
+          throw new Error('not_found');
+        }
+
+        const city  = places[0]['place name'];
+        const state = places[0]['state'];
+
+        result.className = 'result success';
+        result.innerHTML = `
+          <div class="result-plz">PLZ ${plz}</div>
+          <div class="result-city">${escapeHtml(city)}</div>
+          <div class="result-state">${escapeHtml(state)}</div>
+        `;
+      } catch (err) {
+        if (err.message === 'not_found') {
+          showError(`Keine Ergebnisse für PLZ <strong>${escapeHtml(plz)}</strong> gefunden.`);
+        } else {
+          showError('Netzwerkfehler – bitte Verbindung prüfen und erneut versuchen.');
+        }
+      } finally {
+        spinner.classList.remove('visible');
+        button.disabled = false;
+      }
+    }
+
+    function showError(msg) {
+      result.className = 'result error';
+      result.innerHTML = msg;
+    }
+
+    function escapeHtml(str) {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    button.addEventListener('click', lookup);
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') lookup();
+    });
+
+    input.addEventListener('input', () => {
+      input.value = input.value.replace(/\D/g, '');
+    });
+  </script>
+</body>
+</html>
