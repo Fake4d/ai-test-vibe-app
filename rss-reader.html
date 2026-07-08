@@ -190,6 +190,11 @@
       border-color: #3e4460;
     }
 
+    .card:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .card-thumb {
       width: 100%;
       aspect-ratio: 16/9;
@@ -383,6 +388,8 @@
       margin-bottom: 28px;
     }
 
+    .modal-desc p + p { margin-top: 14px; }
+
     .modal-actions {
       display: flex;
       gap: 12px;
@@ -460,7 +467,7 @@
 
 <!-- Article overlay -->
 <div id="overlay">
-  <div class="modal" id="modal"></div>
+  <div class="modal" id="modal" role="dialog" aria-modal="true" aria-label="Artikelansicht"></div>
 </div>
 
 <script>
@@ -474,40 +481,111 @@
   const overlay   = document.getElementById('overlay');
   const modal     = document.getElementById('modal');
 
-  // ── helpers ──────────────────────────────────────────────────────────────
+  // ── DOM helpers ──────────────────────────────────────────────────────────
+  // All feed content goes through el()/textContent — never innerHTML — so a
+  // malicious feed cannot inject markup or scripts into the page.
 
-  function setState(html) {
-    state.innerHTML = html;
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  // Only http(s) URLs may become href/src; blocks javascript:/data: links.
+  function sanitizeUrl(u) {
+    if (!u) return '';
+    try {
+      const parsed = new URL(u.trim());
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
+    } catch {}
+    return '';
+  }
+
+  // DOMParser documents are inert: scripts don't run, images don't load.
+  // (innerHTML on a detached div is NOT safe – <img onerror> fires there.)
+  function stripHtml(html) {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return (doc.body.textContent || '').trim();
+  }
+
+  // Extract readable paragraphs from an HTML fragment (for the modal view)
+  function htmlToParagraphs(html) {
+    if (!html) return [];
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const paras = [...doc.body.querySelectorAll('p')]
+      .map(p => (p.textContent || '').trim())
+      .filter(Boolean);
+    if (paras.length) return paras;
+    const text = (doc.body.textContent || '').trim();
+    return text ? [text] : [];
+  }
+
+  function setState(nodes) {
+    state.replaceChildren(...nodes);
     state.style.display = '';
     feedMeta.style.display = 'none';
-    articles.innerHTML = '';
+    articles.replaceChildren();
   }
 
   function showLoading() {
-    setState('<div class="spinner"></div><div class="state-title">Feed wird geladen…</div><div class="state-sub">Einen Moment bitte.</div>');
+    setState([
+      el('div', 'spinner'),
+      el('div', 'state-title', 'Feed wird geladen…'),
+      el('div', 'state-sub', 'Einen Moment bitte.'),
+    ]);
   }
 
-  function showError(msg) {
-    setState(`<div class="state-icon">⚠️</div><div class="state-title">Fehler beim Laden</div><div class="state-sub">${msg}</div>`);
+  function showError(message, detail) {
+    const sub = el('div', 'state-sub', message);
+    if (detail) {
+      sub.appendChild(document.createElement('br'));
+      const small = document.createElement('small');
+      small.textContent = detail;
+      sub.appendChild(small);
+    }
+    setState([
+      el('div', 'state-icon', '⚠️'),
+      el('div', 'state-title', 'Fehler beim Laden'),
+      sub,
+    ]);
   }
 
-  function getText(el, tag) {
-    const node = el.querySelector(tag);
-    return node ? (node.textContent || '').trim() : '';
-  }
-
-  function getAttr(el, tag, attr) {
-    const node = el.querySelector(tag);
-    return node ? (node.getAttribute(attr) || '').trim() : '';
-  }
+  // ── Feed parsing helpers ─────────────────────────────────────────────────
 
   // Returns first element matching any of the tag names (with namespace prefix)
-  function byTagName(el, ...tags) {
+  function byTagName(scope, ...tags) {
     for (const tag of tags) {
-      const found = el.getElementsByTagName(tag);
+      const found = scope.getElementsByTagName(tag);
       if (found.length) return found[0];
     }
     return null;
+  }
+
+  function getTextByTag(scope, ...tags) {
+    const node = byTagName(scope, ...tags);
+    return node ? (node.textContent || '').trim() : '';
+  }
+
+  // Article link: RSS <link>text</link>, Atom <link rel="alternate" href>,
+  // fallback <guid isPermaLink>
+  function extractLink(item) {
+    const links = [...item.getElementsByTagName('link')];
+    for (const l of links) {
+      const text = (l.textContent || '').trim();
+      if (/^https?:/i.test(text)) return text;
+    }
+    const alternate = links.find(l =>
+      (l.getAttribute('rel') || 'alternate') === 'alternate' && l.getAttribute('href'));
+    if (alternate) return alternate.getAttribute('href');
+    const any = links.find(l => l.getAttribute('href'));
+    if (any) return any.getAttribute('href');
+    const guid = byTagName(item, 'guid');
+    if (guid && /^https?:/i.test((guid.textContent || '').trim())) {
+      return guid.textContent.trim();
+    }
+    return '';
   }
 
   // Find first <img src=""> in any HTML/CDATA text
@@ -544,7 +622,7 @@
     }
 
     // 4. enclosure (RSS 2.0)
-    const enc = item.querySelector('enclosure');
+    const enc = byTagName(item, 'enclosure');
     if (enc) {
       const type = enc.getAttribute('type') || '';
       if (!type || type.startsWith('image')) {
@@ -582,125 +660,196 @@
     return '';
   }
 
+  // RSS: <category>Text</category> — Atom: <category term="…"/>
   function extractCategory(item) {
-    const cat = item.querySelector('category');
-    return cat ? cat.textContent.trim() : '';
+    const cat = byTagName(item, 'category');
+    if (!cat) return '';
+    return (cat.textContent || '').trim() || (cat.getAttribute('term') || '').trim();
   }
 
-  function formatDate(str) {
-    if (!str) return '';
-    try {
-      return new Date(str).toLocaleDateString('de-DE', {
-        day: '2-digit', month: 'short', year: 'numeric',
-        hour: '2-digit', minute: '2-digit'
-      });
-    } catch { return str; }
+  function parseItemDate(item) {
+    const str = getTextByTag(item, 'pubDate', 'published', 'updated', 'dc:date');
+    if (!str) return null;
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
   }
 
-  function stripHtml(html) {
-    const d = document.createElement('div');
-    d.innerHTML = html;
-    return d.textContent || '';
+  function fullDate(d) {
+    return d.toLocaleDateString('de-DE', {
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    }) + ' Uhr';
   }
 
-  function imgFallback(el) {
-    const ph = document.createElement('div');
-    ph.className = 'card-thumb-placeholder';
-    ph.textContent = '📄';
-    el.parentNode.replaceChild(ph, el);
+  // "vor 5 Min." / "vor 3 Std." for fresh news, absolute date otherwise
+  function formatDate(d) {
+    if (!d) return '';
+    const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+    if (mins < 1) return 'gerade eben';
+    if (mins < 60) return `vor ${mins} Min.`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `vor ${hours} Std.`;
+    return d.toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  // Normalize one <item>/<entry> into a plain article object
+  function parseItem(item) {
+    const rawSummary = getTextByTag(item, 'description', 'summary');
+    const fullHtml = getTextByTag(item, 'content:encoded', 'content') || rawSummary;
+    return {
+      title: getTextByTag(item, 'title') || 'Ohne Titel',
+      link: sanitizeUrl(extractLink(item)),
+      desc: stripHtml(rawSummary),
+      paragraphs: htmlToParagraphs(fullHtml),
+      date: parseItemDate(item),
+      cat: extractCategory(item),
+      imgUrl: sanitizeUrl(extractImage(item)),
+    };
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
 
+  function makeThumbPlaceholder() {
+    return el('div', 'card-thumb-placeholder', '📄');
+  }
+
   function renderFeedMeta(channel, count) {
-    const title = getText(channel, 'title');
-    const desc  = getText(channel, 'description');
-    const link  = getText(channel, 'link');
-    const img   = getAttr(channel, 'image url', 'src') || getText(channel, 'image url') || '';
+    const title = getTextByTag(channel, 'title') || 'RSS Feed';
+    const desc = stripHtml(getTextByTag(channel, 'description', 'subtitle'));
 
-    const iconHtml = img
-      ? `<img class="feed-icon" src="${img}" alt="" onerror="this.style.display='none'">`
-      : `<div class="feed-icon-placeholder">📰</div>`;
+    let iconUrl = '';
+    const imageEl = byTagName(channel, 'image');       // RSS <image><url>
+    if (imageEl) iconUrl = getTextByTag(imageEl, 'url');
+    if (!iconUrl) iconUrl = getTextByTag(channel, 'icon', 'logo'); // Atom
+    iconUrl = sanitizeUrl(iconUrl);
 
-    feedMeta.innerHTML = `
-      <div class="feed-header">
-        ${iconHtml}
-        <div class="feed-info">
-          <h2>${title || 'RSS Feed'}</h2>
-          <p>${desc || link || ''}</p>
-        </div>
-        <span class="feed-badge">${count} Artikel</span>
-      </div>`;
+    const header = el('div', 'feed-header');
+
+    if (iconUrl) {
+      const icon = el('img', 'feed-icon');
+      icon.src = iconUrl;
+      icon.alt = '';
+      icon.setAttribute('referrerpolicy', 'no-referrer');
+      icon.addEventListener('error', () => icon.replaceWith(el('div', 'feed-icon-placeholder', '📰')));
+      header.appendChild(icon);
+    } else {
+      header.appendChild(el('div', 'feed-icon-placeholder', '📰'));
+    }
+
+    const info = el('div', 'feed-info');
+    info.appendChild(el('h2', '', title));
+    if (desc) info.appendChild(el('p', '', desc));
+    header.appendChild(info);
+    header.appendChild(el('span', 'feed-badge', `${count} Artikel`));
+
+    feedMeta.replaceChildren(header);
     feedMeta.style.display = 'block';
     state.style.display = 'none';
   }
 
-  function renderCards(items) {
-    articles.innerHTML = '';
-    items.forEach((item, i) => {
-      const title   = getText(item, 'title');
-      const link    = getText(item, 'link') || getAttr(item, 'link', 'href');
-      const desc    = stripHtml(getText(item, 'description') || getText(item, 'summary') || '');
-      const date    = getText(item, 'pubDate') || getText(item, 'published') || getText(item, 'dc\\:date') || '';
-      const cat     = extractCategory(item);
-      const imgUrl  = extractImage(item);
+  function makeCard(article) {
+    const card = el('a', 'card');
+    card.href = article.link || '#';
+    card.setAttribute('aria-label', article.title);
 
-      const card = document.createElement('a');
-      card.className = 'card';
-      card.href = '#';
-      card.setAttribute('aria-label', title);
+    if (article.imgUrl) {
+      const img = el('img', 'card-thumb');
+      img.src = article.imgUrl;
+      img.alt = '';
+      img.setAttribute('loading', 'lazy');
+      img.setAttribute('referrerpolicy', 'no-referrer');
+      img.addEventListener('error', () => img.replaceWith(makeThumbPlaceholder()));
+      card.appendChild(img);
+    } else {
+      card.appendChild(makeThumbPlaceholder());
+    }
 
-      card.innerHTML = `
-        ${imgUrl
-          ? `<img class="card-thumb" src="${imgUrl}" alt="" loading="lazy" onerror="imgFallback(this)">`
-          : `<div class="card-thumb-placeholder">📄</div>`
-        }
-        <div class="card-body">
-          ${cat ? `<div class="card-category">${cat}</div>` : ''}
-          <div class="card-title">${title}</div>
-          ${desc ? `<div class="card-desc">${desc}</div>` : ''}
-          <div class="card-footer">
-            <span class="card-date">${formatDate(date)}</span>
-            <span class="card-link-icon">Lesen →</span>
-          </div>
-        </div>`;
+    const body = el('div', 'card-body');
+    if (article.cat) body.appendChild(el('div', 'card-category', article.cat));
+    body.appendChild(el('div', 'card-title', article.title));
+    if (article.desc) body.appendChild(el('div', 'card-desc', article.desc));
 
-      card.addEventListener('click', (e) => {
-        e.preventDefault();
-        openModal({ title, link, desc, date, cat, imgUrl });
-      });
+    const footer = el('div', 'card-footer');
+    const dateSpan = el('span', 'card-date', formatDate(article.date));
+    if (article.date) dateSpan.title = fullDate(article.date);
+    footer.appendChild(dateSpan);
+    footer.appendChild(el('span', 'card-link-icon', 'Lesen →'));
+    body.appendChild(footer);
+    card.appendChild(body);
 
-      articles.appendChild(card);
+    card.addEventListener('click', (e) => {
+      // Let ctrl/cmd/middle-click open the original article in a new tab
+      if (e.ctrlKey || e.metaKey || e.button === 1) return;
+      e.preventDefault();
+      openModal(article);
     });
+
+    return card;
+  }
+
+  function renderCards(articleList) {
+    articles.replaceChildren(...articleList.map(makeCard));
   }
 
   // ── Modal ─────────────────────────────────────────────────────────────────
 
-  function openModal({ title, link, desc, date, cat, imgUrl }) {
-    modal.innerHTML = `
-      ${imgUrl ? `<img class="modal-hero" src="${imgUrl}" alt="${title}" onerror="this.style.display='none'">` : ''}
-      <div class="modal-body">
-        <div class="modal-meta">
-          ${cat ? `<span class="modal-category">${cat}</span>` : ''}
-          ${date ? `<span class="modal-date">${formatDate(date)}</span>` : ''}
-        </div>
-        <h2 class="modal-title">${title}</h2>
-        ${desc ? `<p class="modal-desc">${desc}</p>` : ''}
-        <div class="modal-actions">
-          ${link ? `<a class="btn-primary" href="${link}" target="_blank" rel="noopener">Artikel öffnen ↗</a>` : ''}
-          <button class="btn-ghost" id="close-btn">✕ Schließen</button>
-        </div>
-      </div>`;
+  let lastFocused = null;
 
+  function openModal(article) {
+    modal.replaceChildren();
+
+    if (article.imgUrl) {
+      const hero = el('img', 'modal-hero');
+      hero.src = article.imgUrl;
+      hero.alt = article.title;
+      hero.setAttribute('referrerpolicy', 'no-referrer');
+      hero.addEventListener('error', () => hero.remove());
+      modal.appendChild(hero);
+    }
+
+    const body = el('div', 'modal-body');
+
+    const meta = el('div', 'modal-meta');
+    if (article.cat) meta.appendChild(el('span', 'modal-category', article.cat));
+    if (article.date) meta.appendChild(el('span', 'modal-date', fullDate(article.date)));
+    if (meta.childNodes.length) body.appendChild(meta);
+
+    body.appendChild(el('h2', 'modal-title', article.title));
+
+    const paragraphs = article.paragraphs.length
+      ? article.paragraphs
+      : (article.desc ? [article.desc] : []);
+    if (paragraphs.length) {
+      const descBox = el('div', 'modal-desc');
+      paragraphs.forEach(p => descBox.appendChild(el('p', '', p)));
+      body.appendChild(descBox);
+    }
+
+    const actions = el('div', 'modal-actions');
+    if (article.link) {
+      const open = el('a', 'btn-primary', 'Artikel öffnen ↗');
+      open.href = article.link;
+      open.target = '_blank';
+      open.rel = 'noopener';
+      actions.appendChild(open);
+    }
+    const close = el('button', 'btn-ghost', '✕ Schließen');
+    close.addEventListener('click', closeModal);
+    actions.appendChild(close);
+    body.appendChild(actions);
+    modal.appendChild(body);
+
+    lastFocused = document.activeElement;
     overlay.classList.add('open');
     document.body.style.overflow = 'hidden';
-
-    document.getElementById('close-btn').addEventListener('click', closeModal);
+    close.focus();
   }
 
   function closeModal() {
     overlay.classList.remove('open');
     document.body.style.overflow = '';
+    if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus();
+    lastFocused = null;
   }
 
   overlay.addEventListener('click', (e) => {
@@ -708,7 +857,7 @@
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
+    if (e.key === 'Escape' && overlay.classList.contains('open')) closeModal();
   });
 
   // ── Load feed ─────────────────────────────────────────────────────────────
@@ -764,27 +913,24 @@
     return res.text();
   }
 
+  let loadSeq = 0; // guards against a slow older request overwriting a newer one
+
   async function loadFeed(feedUrl) {
+    const seq = ++loadSeq;
     showLoading();
 
     let xml;
     try {
       xml = await fetchWithFallback(feedUrl);
     } catch (err) {
-      showError(`Feed konnte nicht geladen werden.<br><small>${err.message}</small>`);
+      if (seq !== loadSeq) return;
+      showError('Feed konnte nicht geladen werden.', err.message);
       return;
     }
+    if (seq !== loadSeq) return;
 
-    let doc;
-    try {
-      doc = new DOMParser().parseFromString(xml, 'text/xml');
-    } catch {
-      showError('Ungültiges XML im Feed.');
-      return;
-    }
-
-    const parseErr = doc.querySelector('parsererror');
-    if (parseErr) {
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    if (doc.querySelector('parsererror')) {
       showError('Feed konnte nicht geparst werden – ist die URL ein gültiger RSS/Atom-Feed?');
       return;
     }
@@ -798,9 +944,21 @@
       return;
     }
 
+    // Newest first; items without a date sort to the end
+    const parsed = items.map(parseItem)
+      .sort((a, b) => (b.date?.getTime() || 0) - (a.date?.getTime() || 0));
+
     const channel = doc.querySelector('channel') || doc.querySelector('feed');
-    renderFeedMeta(channel, items.length);
-    renderCards(items);
+    renderFeedMeta(channel, parsed.length);
+    renderCards(parsed);
+
+    // Make the loaded feed shareable via ?feed=… (skip on file:// etc.)
+    try {
+      const u = new URL(location.href);
+      if (feedUrl === DEFAULT_FEED) u.searchParams.delete('feed');
+      else u.searchParams.set('feed', feedUrl);
+      history.replaceState(null, '', u);
+    } catch {}
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
@@ -814,8 +972,16 @@
     if (e.key === 'Enter') loadBtn.click();
   });
 
-  // Auto-load default feed on startup
-  loadFeed(DEFAULT_FEED);
+  // Auto-load: ?feed=… parameter wins, otherwise the default feed
+  let initialFeed = DEFAULT_FEED;
+  try {
+    const requested = sanitizeUrl(new URLSearchParams(location.search).get('feed') || '');
+    if (requested) {
+      initialFeed = requested;
+      urlInput.value = requested;
+    }
+  } catch {}
+  loadFeed(initialFeed);
 </script>
 </body>
 </html>
