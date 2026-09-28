@@ -36,6 +36,68 @@ cleanup() {
     fi
     exit "$status"
 }
+
+# Codex aktualisiert seinen Hintergrunddienst (app-server-daemon) selbst und lässt dabei jede
+# Vorversion liegen (~400 MB pro Stück). Entfernt werden nur echte Verzeichnisse (keine Symlinks)
+# mit sauberem Versionsnamen, deren Version laut `sort -V` kleiner ist als die aktive (`current`)
+# und aus denen kein eigener Prozess ein Programm oder eine Bibliothek geladen hat
+# (/proc/*/exe und /proc/*/maps). Eine neuere, evtl. gerade installierte Version bleibt immer liegen.
+# Hält Codex seine install.lock (flock), wird gar nicht aufgeräumt. Vor dem Löschen wird `current`
+# noch einmal gelesen; das Zeitfenster zum Selbstupdate ist damit klein, aber nicht null.
+daemon_aufraeumen() {
+    local basis="$HOME/.codex/packages/app-server-daemon"
+    local rel aktiv aktiv_name name d
+    rel=$(readlink -f -- "$basis/releases") && [[ -d "$rel" && ! -L "$basis/releases" ]] || return 0
+    aktiv=$(readlink -f -- "$basis/current") && [[ -d "$aktiv" && "${aktiv%/*}" == "$rel" ]] || return 0
+    aktiv_name=${aktiv##*/}
+    local muster='^[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9_]+(-[A-Za-z0-9_]+)*$'
+    [[ "$aktiv_name" =~ $muster ]] || return 0
+    exec 7>>"$basis/install.lock" && flock -n 7 || { echo "Codex installiert gerade – kein Aufräumen."; return 0; }
+    for d in "$rel"/*; do
+        name=${d##*/}
+        [[ -d "$d" && ! -L "$d" && "$name" =~ $muster && "$name" != "$aktiv_name" ]] || continue
+        # Nur Versionen, die eindeutig älter sind als die aktive.
+        [[ "$(printf '%s\n%s\n' "$name" "$aktiv_name" | sort -V | head -n1)" == "$name" ]] || continue
+        if in_benutzung "$d"; then
+            echo "Dienst-Version $name ist noch in Benutzung – bleibt liegen."
+            continue
+        fi
+        [[ "$(readlink -f -- "$basis/current")" == "$aktiv" ]] || { echo "current hat sich geändert – Abbruch."; break; }
+        rm -rf -- "$d" && echo "Alte Dienst-Version entfernt: $name"
+    done
+    flock -u 7
+}
+
+# Hat irgendein Prozess dieses Benutzers ein Programm aus Verzeichnis $1 gestartet oder eine Datei
+# daraus eingeblendet? Fremde Prozesse zählen nicht – Codex läuft als dieser Benutzer.
+# Manche eigenen Prozesse lassen sich grundsätzlich nicht einsehen (nicht "dumpable": gpg-agent,
+# systemd --user). Die blockieren nur, wenn ihre Kommandozeile auf Codex-Pakete zeigt – sonst würde
+# nie aufgeräumt. Restlücke: ein nicht einsehbarer Prozess, der Dateien von dort lädt, ohne dass seine
+# Kommandozeile es verrät; das tun die Codex-Dienste nicht (sie starten mit vollem Pfad).
+in_benutzung() {
+    local p exe uid rc
+    uid=$(id -u)
+    for p in /proc/[0-9]*; do
+        # Besitzer aus status (bleibt auch bei nicht "dumpable" Prozessen korrekt), Zombies überspringen
+        awk -v u="$uid" '$1=="Uid:"{ok=($2==u)} $1=="State:"{z=($2=="Z")} END{exit !(ok && !z)}' \
+            "$p/status" 2>/dev/null || continue
+        if ! exe=$(readlink -- "$p/exe" 2>/dev/null); then
+            nicht_einsehbar_codex "$p" && return 0
+            continue
+        fi
+        [[ "$exe" == "$1/"* ]] && return 0
+        rc=0; grep -qF -- "$1/" "$p/maps" 2>/dev/null || rc=$?
+        (( rc == 0 )) && return 0
+        (( rc == 1 )) || ! nicht_einsehbar_codex "$p" || return 0
+    done
+    return 1
+}
+
+# Nicht einsehbarer, noch laufender Prozess, dessen Kommandozeile auf Codex-Pakete zeigt?
+nicht_einsehbar_codex() {
+    [[ -e "$1" ]] && tr '\0' ' ' < "$1/cmdline" 2>/dev/null | grep -qF -- "/.codex/packages/"
+}
+
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -71,6 +133,7 @@ version="${BASH_REMATCH[1]}"
 echo "Installiert: $alt – neueste: $version"
 if [[ "$alt" == "codex-cli $version" ]]; then
     echo "Codex ist bereits aktuell."
+    daemon_aufraeumen || true
     exit 0
 fi
 
@@ -119,3 +182,4 @@ echo "Jetzt: $jetzt"
 if (( hat_alt )); then
     echo "Vorversion liegt in $ziel.alt"
 fi
+daemon_aufraeumen || true

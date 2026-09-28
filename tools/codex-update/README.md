@@ -14,6 +14,16 @@ Erst dann wird die neue Version eingesetzt. Scheitert danach etwas, wird automat
 vorherigen Stand zurückgebaut. Eine Sperre verhindert zwei gleichzeitige Läufe; ist bereits
 die neueste Version installiert, passiert nichts.
 
+Zum Schluss räumt es alte Versionen des Codex-Hintergrunddienstes weg
+(`~/.codex/packages/app-server-daemon/releases/`). Den aktualisiert Codex selbst, lässt dabei aber
+jede Vorversion liegen – rund 400 MB pro Stück. Entfernt wird nur ein echtes Verzeichnis (kein
+Symlink) mit sauberem Versionsnamen, dessen Version laut `sort -V` kleiner ist als die aktive und
+aus dem kein laufender Prozess ein Programm oder eine Bibliothek geladen hat (`/proc/*/exe`,
+`/proc/*/maps`). Neuere Versionen bleiben immer liegen, ebenso alles, solange Codex seine
+`install.lock` hält oder kein gültiger `current`-Link existiert. Direkt vor dem Löschen wird
+`current` erneut geprüft; ein kleines Zeitfenster zum Selbstupdate von Codex bleibt, weil Codex
+dafür keine gemeinsame Sperre anbietet.
+
 ## Installation
 
 ```bash
@@ -31,6 +41,7 @@ codex login --device-auth   # einmalig anmelden (ChatGPT-Konto)
 | `~/.local/share/codex/` | aktuelle Version |
 | `~/.local/share/codex.alt/` | vorherige Version (Rückfallebene) |
 | `~/.local/bin/codex` | Link auf die aktuelle Version |
+| `~/.codex/packages/app-server-daemon/` | Hintergrunddienst (aktualisiert Codex selbst, alte Versionen räumt das Skript weg) |
 
 ## Getestet
 
