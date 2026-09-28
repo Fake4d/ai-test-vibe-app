@@ -68,16 +68,34 @@ daemon_aufraeumen() {
     flock -u 7
 }
 
-# Hat irgendein lesbarer Prozess ein Programm aus Verzeichnis $1 gestartet oder eine Datei daraus
-# eingeblendet? Prozesse anderer Benutzer sind nicht lesbar; Codex läuft aber als dieser Benutzer.
+# Hat irgendein Prozess dieses Benutzers ein Programm aus Verzeichnis $1 gestartet oder eine Datei
+# daraus eingeblendet? Fremde Prozesse zählen nicht – Codex läuft als dieser Benutzer.
+# Manche eigenen Prozesse lassen sich grundsätzlich nicht einsehen (nicht "dumpable": gpg-agent,
+# systemd --user). Die blockieren nur, wenn ihre Kommandozeile auf Codex-Pakete zeigt – sonst würde
+# nie aufgeräumt. Restlücke: ein nicht einsehbarer Prozess, der Dateien von dort lädt, ohne dass seine
+# Kommandozeile es verrät; das tun die Codex-Dienste nicht (sie starten mit vollem Pfad).
 in_benutzung() {
-    local p exe
+    local p exe uid rc
+    uid=$(id -u)
     for p in /proc/[0-9]*; do
-        exe=$(readlink -- "$p/exe" 2>/dev/null) || continue
+        # Besitzer aus status (bleibt auch bei nicht "dumpable" Prozessen korrekt), Zombies überspringen
+        awk -v u="$uid" '$1=="Uid:"{ok=($2==u)} $1=="State:"{z=($2=="Z")} END{exit !(ok && !z)}' \
+            "$p/status" 2>/dev/null || continue
+        if ! exe=$(readlink -- "$p/exe" 2>/dev/null); then
+            nicht_einsehbar_codex "$p" && return 0
+            continue
+        fi
         [[ "$exe" == "$1/"* ]] && return 0
-        grep -qF -- "$1/" "$p/maps" 2>/dev/null && return 0
+        rc=0; grep -qF -- "$1/" "$p/maps" 2>/dev/null || rc=$?
+        (( rc == 0 )) && return 0
+        (( rc == 1 )) || ! nicht_einsehbar_codex "$p" || return 0
     done
     return 1
+}
+
+# Nicht einsehbarer, noch laufender Prozess, dessen Kommandozeile auf Codex-Pakete zeigt?
+nicht_einsehbar_codex() {
+    [[ -e "$1" ]] && tr '\0' ' ' < "$1/cmdline" 2>/dev/null | grep -qF -- "/.codex/packages/"
 }
 
 trap cleanup EXIT
