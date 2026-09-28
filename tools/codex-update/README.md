@@ -16,9 +16,13 @@ die neueste Version installiert, passiert nichts.
 
 Zum Schluss räumt es alte Versionen des Codex-Hintergrunddienstes weg
 (`~/.codex/packages/app-server-daemon/releases/`). Den aktualisiert Codex selbst, lässt dabei aber
-jede Vorversion liegen – rund 400 MB pro Stück. Entfernt wird nur, was älter ist als die aktive
-Version und von keinem laufenden Prozess benutzt wird; eine frisch heruntergeladene, noch nicht
-aktivierte Version bleibt stehen. Ohne gültigen `current`-Link wird nichts angefasst.
+jede Vorversion liegen – rund 400 MB pro Stück. Entfernt wird nur ein echtes Verzeichnis (kein
+Symlink) mit sauberem Versionsnamen, dessen Version laut `sort -V` kleiner ist als die aktive und
+aus dem kein laufender Prozess ein Programm oder eine Bibliothek geladen hat (`/proc/*/exe`,
+`/proc/*/maps`). Neuere Versionen bleiben immer liegen, ebenso alles, solange Codex seine
+`install.lock` hält oder kein gültiger `current`-Link existiert. Direkt vor dem Löschen wird
+`current` erneut geprüft; ein kleines Zeitfenster zum Selbstupdate von Codex bleibt, weil Codex
+dafür keine gemeinsame Sperre anbietet.
 
 ## Installation
 

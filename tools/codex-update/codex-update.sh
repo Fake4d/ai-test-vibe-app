@@ -38,23 +38,46 @@ cleanup() {
 }
 
 # Codex aktualisiert seinen Hintergrunddienst (app-server-daemon) selbst und lässt dabei jede
-# Vorversion liegen (~400 MB pro Stück). Entfernt werden nur Versionen, die älter sind als die
-# aktive (`current`) und von keinem laufenden Prozess benutzt werden – eine gerade erst
-# heruntergeladene, noch nicht aktivierte Version ist neuer und bleibt deshalb unangetastet.
+# Vorversion liegen (~400 MB pro Stück). Entfernt werden nur echte Verzeichnisse (keine Symlinks)
+# mit sauberem Versionsnamen, deren Version laut `sort -V` kleiner ist als die aktive (`current`)
+# und aus denen kein eigener Prozess ein Programm oder eine Bibliothek geladen hat
+# (/proc/*/exe und /proc/*/maps). Eine neuere, evtl. gerade installierte Version bleibt immer liegen.
+# Hält Codex seine install.lock (flock), wird gar nicht aufgeräumt. Vor dem Löschen wird `current`
+# noch einmal gelesen; das Zeitfenster zum Selbstupdate ist damit klein, aber nicht null.
 daemon_aufraeumen() {
-    local rel="$HOME/.codex/packages/app-server-daemon/releases"
-    local aktiv d
-    aktiv=$(readlink -f -- "$rel/../current" 2>/dev/null) || return 0
-    [[ -d "$aktiv" && "${aktiv%/*}" == "$(readlink -f -- "$rel")" ]] || return 0
-    for d in "$rel"/*/; do
-        d=$(readlink -f -- "$d")
-        [[ "$d" != "$aktiv" && "$d" -ot "$aktiv" ]] || continue
-        if pgrep -f -- "$d/" >/dev/null; then
-            echo "Dienst-Version ${d##*/} läuft noch – bleibt liegen."
+    local basis="$HOME/.codex/packages/app-server-daemon"
+    local rel aktiv aktiv_name name d
+    rel=$(readlink -f -- "$basis/releases") && [[ -d "$rel" && ! -L "$basis/releases" ]] || return 0
+    aktiv=$(readlink -f -- "$basis/current") && [[ -d "$aktiv" && "${aktiv%/*}" == "$rel" ]] || return 0
+    aktiv_name=${aktiv##*/}
+    local muster='^[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9_]+(-[A-Za-z0-9_]+)*$'
+    [[ "$aktiv_name" =~ $muster ]] || return 0
+    exec 7>>"$basis/install.lock" && flock -n 7 || { echo "Codex installiert gerade – kein Aufräumen."; return 0; }
+    for d in "$rel"/*; do
+        name=${d##*/}
+        [[ -d "$d" && ! -L "$d" && "$name" =~ $muster && "$name" != "$aktiv_name" ]] || continue
+        # Nur Versionen, die eindeutig älter sind als die aktive.
+        [[ "$(printf '%s\n%s\n' "$name" "$aktiv_name" | sort -V | head -n1)" == "$name" ]] || continue
+        if in_benutzung "$d"; then
+            echo "Dienst-Version $name ist noch in Benutzung – bleibt liegen."
             continue
         fi
-        rm -rf -- "$d" && echo "Alte Dienst-Version entfernt: ${d##*/}"
+        [[ "$(readlink -f -- "$basis/current")" == "$aktiv" ]] || { echo "current hat sich geändert – Abbruch."; break; }
+        rm -rf -- "$d" && echo "Alte Dienst-Version entfernt: $name"
     done
+    flock -u 7
+}
+
+# Hat irgendein lesbarer Prozess ein Programm aus Verzeichnis $1 gestartet oder eine Datei daraus
+# eingeblendet? Prozesse anderer Benutzer sind nicht lesbar; Codex läuft aber als dieser Benutzer.
+in_benutzung() {
+    local p exe
+    for p in /proc/[0-9]*; do
+        exe=$(readlink -- "$p/exe" 2>/dev/null) || continue
+        [[ "$exe" == "$1/"* ]] && return 0
+        grep -qF -- "$1/" "$p/maps" 2>/dev/null && return 0
+    done
+    return 1
 }
 
 trap cleanup EXIT
