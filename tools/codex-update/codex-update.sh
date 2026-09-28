@@ -36,6 +36,27 @@ cleanup() {
     fi
     exit "$status"
 }
+
+# Codex aktualisiert seinen Hintergrunddienst (app-server-daemon) selbst und lässt dabei jede
+# Vorversion liegen (~400 MB pro Stück). Entfernt werden nur Versionen, die älter sind als die
+# aktive (`current`) und von keinem laufenden Prozess benutzt werden – eine gerade erst
+# heruntergeladene, noch nicht aktivierte Version ist neuer und bleibt deshalb unangetastet.
+daemon_aufraeumen() {
+    local rel="$HOME/.codex/packages/app-server-daemon/releases"
+    local aktiv d
+    aktiv=$(readlink -f -- "$rel/../current" 2>/dev/null) || return 0
+    [[ -d "$aktiv" && "${aktiv%/*}" == "$(readlink -f -- "$rel")" ]] || return 0
+    for d in "$rel"/*/; do
+        d=$(readlink -f -- "$d")
+        [[ "$d" != "$aktiv" && "$d" -ot "$aktiv" ]] || continue
+        if pgrep -f -- "$d/" >/dev/null; then
+            echo "Dienst-Version ${d##*/} läuft noch – bleibt liegen."
+            continue
+        fi
+        rm -rf -- "$d" && echo "Alte Dienst-Version entfernt: ${d##*/}"
+    done
+}
+
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -71,6 +92,7 @@ version="${BASH_REMATCH[1]}"
 echo "Installiert: $alt – neueste: $version"
 if [[ "$alt" == "codex-cli $version" ]]; then
     echo "Codex ist bereits aktuell."
+    daemon_aufraeumen || true
     exit 0
 fi
 
@@ -119,3 +141,4 @@ echo "Jetzt: $jetzt"
 if (( hat_alt )); then
     echo "Vorversion liegt in $ziel.alt"
 fi
+daemon_aufraeumen || true
